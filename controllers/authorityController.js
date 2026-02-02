@@ -475,12 +475,12 @@ exports.getDashboardStats = async (req, res, next) => {
 };
 
 
-// @desc    Get tourist management dashboard data (Counts + Registry)
+// @desc    Get tourist management dashboard data (Counts + Registry - ACTIVE ONLY)
 // @route   GET /api/authority/tourist-management
 // @access  Private (authority)
 exports.getTouristManagementData = async (req, res, next) => {
   try {
-    const { status, search } = req.query; // Optional filters
+    const { search } = req.query; // Optional filters
 
     // 1. Calculate Summary Stats
     const totalTourists = await Tourist.countDocuments();
@@ -493,14 +493,10 @@ exports.getTouristManagementData = async (req, res, next) => {
     ]);
     const averageSafetyScore = avgScoreResult.length > 0 ? Math.round(avgScoreResult[0].avg) : 0;
 
-    // 2. Fetch Tourist Registry List
-    // Note: Search by name is limited due to encryption. We can search by ID directly.
-    let query = {};
-    if (status === 'active') {
-      query.expiresAt = { $gt: new Date() };
-    } else if (status === 'expired') {
-      query.expiresAt = { $lte: new Date() };
-    }
+    // 2. Fetch Tourist Registry List - ACTIVE ONLY
+    let query = {
+      expiresAt: { $gt: new Date() }
+    };
 
     if (search) {
       // Simple search on touristId (which is plaintext)
@@ -519,18 +515,17 @@ exports.getTouristManagementData = async (req, res, next) => {
         console.error(`Decrypt error for tourist ${t.touristId}:`, e.message);
       }
 
-      const isActive = t.expiresAt && new Date(t.expiresAt) > new Date();
-
       return {
         id: t._id,
         touristId: t.touristId,
         name: name,
         phone: phone,
         country: "India",
+        nationality: t.nationality || "Unknown",
         tripStart: t.createdAt,
         tripEnd: t.expiresAt,
         safetyScore: t.safetyScore,
-        status: isActive ? "ACTIVE" : "EXPIRED",
+        status: "ACTIVE",
         regTxHash: t.audit ? t.audit.regTxHash : "N/A"
       };
     });
@@ -559,6 +554,53 @@ exports.getTouristManagementData = async (req, res, next) => {
 
   } catch (err) {
     console.error("❌ getTouristManagementData error:", err);
+    next(err);
+  }
+};
+
+// @desc    Get expired tourist data (Secured: Blockchain & Alerts only)
+// @route   GET /api/authority/expired-tourists
+// @access  Private (authority)
+exports.getExpiredTouristData = async (req, res, next) => {
+  try {
+    const { search } = req.query;
+
+    const query = {
+      expiresAt: { $lte: new Date() } // ONLY EXPIRED
+    };
+
+    if (search) {
+      query.touristId = { $regex: search, $options: 'i' };
+    }
+
+    const expiredTourists = await Tourist.find(query).sort({ expiresAt: -1 }).lean();
+
+    const registry = await Promise.all(expiredTourists.map(async (t) => {
+      // Fetch alerts for this tourist
+      const alerts = await SOSAlert.find({ touristId: t._id })
+        .select('status timestamp location sosReason safetyScore')
+        .lean();
+
+      return {
+        touristId: t.touristId,
+        expiresAt: t.expiresAt,
+        blockchainDetails: t.audit || {},
+        sosAlerts: alerts.map(a => ({
+          status: a.status,
+          timestamp: a.timestamp,
+          reason: a.sosReason ? a.sosReason.reason : 'Unknown',
+          safetyScoreAtAlert: a.safetyScore
+        }))
+      };
+    }));
+    
+    res.status(200).json({
+      success: true,
+      data: registry
+    });
+
+  } catch (err) {
+    console.error("❌ getExpiredTouristData error:", err);
     next(err);
   }
 };

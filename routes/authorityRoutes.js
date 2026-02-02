@@ -5,6 +5,7 @@ const {
   getSosCounts,
   getDashboardStats,
   getTouristManagementData,
+  getExpiredTouristData,
   revokeTourist,
   getMapOverview,
   signUp, signIn, verify, logOut,
@@ -18,6 +19,7 @@ const router = express.Router();
 // The 'authorize' middleware checks if the authenticated user has the 'authority' role
 router.get('/dashboard-stats', verifyToken, isAuthority, getDashboardStats);
 router.get('/tourist-management', verifyToken, isAuthority, getTouristManagementData);
+router.get('/expired-tourists', verifyToken, isAuthority, getExpiredTouristData);
 router.get('/map-overview', verifyToken, isAuthority, getMapOverview);
 router.delete('/revoke/:id', verifyToken, isAuthority, revokeTourist);
 router.get('/alerts', verifyToken, isAuthority, getNewSosAlerts);

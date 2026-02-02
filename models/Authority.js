@@ -10,7 +10,7 @@ const authoritySchema = new mongoose.Schema({
   authorityId: { type: String, required: true }, // simple string, can later be ObjectId ref
   role: {
     type: String,
-    enum: ["Police Officer", "Tourism Officer", "Emergency Responder", "Admin"],
+    enum: ["Police Official", "Tourism Officer", "Emergency Responder", "Admin"],
     required: true
   },
   isActive: { type: Boolean, default: true }
