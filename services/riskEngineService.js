@@ -183,4 +183,23 @@ async function processGrid(gridId) {
     );
 }
 
-module.exports = { updateRiskScores, getGridIdAndCenter };
+/**
+ * Update risk score for a specific location immediately (for instant SOS feedback)
+ * @param {number} lat - Latitude
+ * @param {number} lng - Longitude
+ * @returns {Object} Updated grid data
+ */
+async function updateGridForLocation(lat, lng) {
+    console.log(`🎯 Updating risk grid for location: ${lat}, ${lng}`);
+    
+    const { gridId } = getGridIdAndCenter(lat, lng);
+    await processGrid(gridId);
+    
+    // Return the updated grid
+    const updatedGrid = await RiskGrid.findOne({ gridId });
+    console.log(`✅ Grid ${gridId} updated - Risk: ${updatedGrid?.riskLevel || 'Unknown'}`);
+    
+    return updatedGrid;
+}
+
+module.exports = { updateRiskScores, getGridIdAndCenter, updateGridForLocation };
