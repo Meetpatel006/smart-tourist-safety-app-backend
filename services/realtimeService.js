@@ -147,3 +147,15 @@ exports.emitIncidentReported = async (incidentData) => {
     console.log(`New incident broadcasted: ${incidentData.id || incidentData._id}`);
   }
 };
+
+/**
+ * Emits a risk grid update event to all connected clients.
+ * @param {object} gridData The updated grid data.
+ */
+exports.emitRiskGridUpdated = async (gridData) => {
+  if (io) {
+    // Broadcast to all clients (not just authorities)
+    io.emit('riskGridUpdated', gridData);
+    console.log(`Risk grid update broadcasted: ${gridData.gridId}`);
+  }
+};

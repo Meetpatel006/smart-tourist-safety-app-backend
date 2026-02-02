@@ -1,6 +1,6 @@
 const SOSAlert = require("../models/SOSAlertModel.js");
 const { ethers } = require("ethers");
-const { updateRiskScores } = require('../services/riskEngineService'); // Import Risk Engine
+const { updateRiskScores, updateGridForLocation } = require('../services/riskEngineService'); // Import Risk Engine
 const { hex64ToBytes32 } = require('../utils/ethFormat.js');
 const { sha256Hex } = require("../utils/hash.js"); // your existing hash utility
 const { POLYGON_RPC, PRIVATE_KEY, SMART_CONTRACT_ADDRESS_sos } = require("../config/config.js");
@@ -175,10 +175,30 @@ exports.triggerSOS = async (req, res, next) => {
 		});
 		await sosAlert.save();
 
-		// 4️⃣ Trigger Real-time Risk Update
-		updateRiskScores().catch(err => console.error("Risk update failed:", err));
+		// 5️⃣ Update Risk Grid IMMEDIATELY for this location (synchronous)
+		let updatedGrid = null;
+		try {
+			const [lng, lat] = location.coordinates;
+			updatedGrid = await updateGridForLocation(lat, lng);
+			console.log('✅ Grid updated immediately for SOS location');
+			
+			// Emit real-time grid update to all connected clients
+			if (updatedGrid) {
+				realtimeService.emitRiskGridUpdated({
+					gridId: updatedGrid.gridId,
+					riskLevel: updatedGrid.riskLevel,
+					riskScore: updatedGrid.riskScore,
+					location: updatedGrid.location,
+					gridName: updatedGrid.gridName,
+					lastUpdated: updatedGrid.lastUpdated
+				}).catch(err => console.error('Grid emit error:', err));
+			}
+		} catch (gridErr) {
+			console.error('⚠️ Failed to update grid immediately:', gridErr);
+			// Don't fail the SOS - continue with response
+		}
 
-		// 5️⃣ Respond to client immediately
+		// 6️⃣ Respond to client immediately WITH grid update info
 		res.json({
 			success: true,
 			message: "SOS alert received. Authorities have been notified.",
@@ -188,9 +208,15 @@ exports.triggerSOS = async (req, res, next) => {
 				location: sosAlert.location,
 				timestamp: sosAlert.timestamp,
 			},
+			gridUpdated: updatedGrid ? {
+				gridId: updatedGrid.gridId,
+				riskLevel: updatedGrid.riskLevel,
+				riskScore: updatedGrid.riskScore,
+				location: updatedGrid.location
+			} : null
 		});
 
-		// 6️⃣ AFTER response: emit real-time SOS to connected authorities (fire-and-forget)
+		// 7️⃣ AFTER response: emit real-time SOS to connected authorities (fire-and-forget)
 		(async () => {
 			try {
 				const alertData = {
@@ -221,7 +247,7 @@ exports.triggerSOS = async (req, res, next) => {
 			}
 		})();
 
-		// 6️⃣ AFTER response: Sequentially log alerts on blockchain
+		// 8️⃣ AFTER response: Sequentially log alerts on blockchain
 		(async () => {
 			try {
 				const { v4: uuidv4 } = await import("uuid");
