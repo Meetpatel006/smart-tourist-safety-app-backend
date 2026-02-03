@@ -761,6 +761,272 @@ Update group itinerary (Tour Admin only).
 
 ---
 
+### Group Member Management (`/api/group/members`)
+
+All group member routes require authentication and Tour Admin role.
+
+#### `GET /api/group/members`
+
+Get all members in the tour group with optional filters.
+
+**Headers**: `Authorization: Bearer <token>`
+
+**Middleware**: Requires `isTourAdmin` role
+
+**Query Parameters** (optional):
+
+- `status`: Filter by member status (e.g., 'active', 'inactive')
+- `name`: Filter by member name (partial match)
+
+**Response** (200 OK):
+
+```json
+{
+  "success": true,
+  "data": {
+    "members": [
+      {
+        "_id": "507f191e810c19729de860f1",
+        "name": "Alice Smith",
+        "email": "alice@example.com",
+        "phone": "+1234567892",
+        "status": "active",
+        "joinedAt": "2026-02-01T10:00:00Z"
+      }
+    ],
+    "count": 1
+  }
+}
+```
+
+---
+
+#### `POST /api/group/members`
+
+Add a new member to the tour group.
+
+**Headers**: `Authorization: Bearer <token>`
+
+**Middleware**: Requires `isTourAdmin` role
+
+**Request Body**:
+
+```json
+{
+  "name": "Bob Johnson",
+  "email": "bob@example.com",
+  "phone": "+1234567893",
+  "emergencyContact": {
+    "name": "Mary Johnson",
+    "phone": "+1234567894",
+    "relation": "Spouse"
+  }
+}
+```
+
+**Response** (200 OK):
+
+```json
+{
+  "success": true,
+  "message": "Member added successfully",
+  "data": {
+    "member": {
+      "_id": "507f191e810c19729de860f2",
+      "name": "Bob Johnson",
+      "email": "bob@example.com",
+      "status": "active"
+    }
+  }
+}
+```
+
+---
+
+#### `POST /api/group/members/bulk`
+
+Bulk add multiple members to the tour group.
+
+**Headers**: `Authorization: Bearer <token>`
+
+**Middleware**: Requires `isTourAdmin` role
+
+**Request Body**:
+
+```json
+{
+  "members": [
+    {
+      "name": "Charlie Brown",
+      "email": "charlie@example.com",
+      "phone": "+1234567894"
+    },
+    {
+      "name": "Diana Prince",
+      "email": "diana@example.com",
+      "phone": "+1234567895"
+    }
+  ]
+}
+```
+
+**Response** (200 OK):
+
+```json
+{
+  "success": true,
+  "message": "2 members added successfully",
+  "data": {
+    "addedCount": 2,
+    "members": [
+      {
+        "_id": "507f191e810c19729de860f3",
+        "name": "Charlie Brown",
+        "email": "charlie@example.com"
+      },
+      {
+        "_id": "507f191e810c19729de860f4",
+        "name": "Diana Prince",
+        "email": "diana@example.com"
+      }
+    ]
+  }
+}
+```
+
+---
+
+#### `POST /api/group/members/send-welcome-all`
+
+Send welcome emails to all members in the tour group.
+
+**Headers**: `Authorization: Bearer <token>`
+
+**Middleware**: Requires `isTourAdmin` role
+
+**Response** (200 OK):
+
+```json
+{
+  "success": true,
+  "message": "Welcome emails sent to all members",
+  "data": {
+    "emailsSent": 5
+  }
+}
+```
+
+---
+
+#### `GET /api/group/members/:memberId`
+
+Get details of a single member by ID.
+
+**Headers**: `Authorization: Bearer <token>`
+
+**Middleware**: Requires `isTourAdmin` role
+
+**URL Parameters**:
+
+- `memberId`: Member's MongoDB ID
+
+**Response** (200 OK):
+
+```json
+{
+  "success": true,
+  "data": {
+    "member": {
+      "_id": "507f191e810c19729de860f1",
+      "name": "Alice Smith",
+      "email": "alice@example.com",
+      "phone": "+1234567892",
+      "emergencyContact": {
+        "name": "John Smith",
+        "phone": "+1234567896",
+        "relation": "Father"
+      },
+      "status": "active",
+      "joinedAt": "2026-02-01T10:00:00Z"
+    }
+  }
+}
+```
+
+---
+
+#### `PUT /api/group/members/:memberId`
+
+Update member information.
+
+**Headers**: `Authorization: Bearer <token>`
+
+**Middleware**: Requires `isTourAdmin` role
+
+**URL Parameters**:
+
+- `memberId`: Member's MongoDB ID
+
+**Request Body**:
+
+```json
+{
+  "name": "Alice Johnson",
+  "phone": "+1234567897",
+  "status": "active",
+  "emergencyContact": {
+    "name": "Jane Smith",
+    "phone": "+1234567898",
+    "relation": "Mother"
+  }
+}
+```
+
+**Response** (200 OK):
+
+```json
+{
+  "success": true,
+  "message": "Member updated successfully",
+  "data": {
+    "member": {
+      "_id": "507f191e810c19729de860f1",
+      "name": "Alice Johnson",
+      "phone": "+1234567897",
+      "status": "active"
+    }
+  }
+}
+```
+
+---
+
+#### `DELETE /api/group/members/:memberId`
+
+Remove a member from the tour group.
+
+**Headers**: `Authorization: Bearer <token>`
+
+**Middleware**: Requires `isTourAdmin` role
+
+**URL Parameters**:
+
+- `memberId`: Member's MongoDB ID
+
+**Response** (200 OK):
+
+```json
+{
+  "success": true,
+  "message": "Member removed successfully",
+  "data": {
+    "removedMemberId": "507f191e810c19729de860f1"
+  }
+}
+```
+
+---
+
 ### Itinerary Management (`/api/itinerary`)
 
 #### `GET /api/itinerary/`
