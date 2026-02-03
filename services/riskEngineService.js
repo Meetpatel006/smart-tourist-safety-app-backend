@@ -76,7 +76,59 @@ async function processGrid(gridId) {
     const lat = parseFloat(latStr);
     const lng = parseFloat(lngStr);
 
-    // --- 1. SOS Cluster Component ---
+    // --- 1. Query SOS Alerts and Incidents for Reasons ---
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    
+    // Get SOS alerts within 2km radius
+    const sosAlerts = await SOSAlert.find({
+        location: {
+            $geoWithin: {
+                $centerSphere: [ [lng, lat], 2000 / 6378100 ]
+            }
+        },
+        timestamp: { $gte: sevenDaysAgo }
+    }).select('sosReason.reason timestamp safetyScore').lean();
+
+    // Get incidents within 3.5km radius
+    const incidents = await Incident.find({
+        location: {
+            $geoWithin: {
+                $centerSphere: [ [lng, lat], 3500 / 6378100 ]
+            }
+        },
+        timestamp: { $gte: sevenDaysAgo }
+    }).select('title type severity timestamp').lean();
+
+    // --- 2. Build Reasons Array (Top 10 Most Recent) ---
+    const reasons = [];
+    
+    // Add SOS alerts
+    sosAlerts.forEach(sos => {
+        reasons.push({
+            type: 'sos_alert',
+            title: sos.sosReason?.reason || 'SOS Alert',
+            timestamp: sos.timestamp,
+            severity: sos.safetyScore, // Store safetyScore (0-100)
+            eventType: 'sos' // Will be replaced with category when SOS categorization is implemented
+        });
+    });
+    
+    // Add incidents
+    incidents.forEach(inc => {
+        reasons.push({
+            type: 'incident',
+            title: inc.title || 'Incident',
+            timestamp: inc.timestamp,
+            severity: inc.severity, // 0-1
+            eventType: inc.type // theft, assault, etc.
+        });
+    });
+    
+    // Sort by timestamp (most recent first) and limit to 10
+    reasons.sort((a, b) => b.timestamp - a.timestamp);
+    const top10Reasons = reasons.slice(0, 10);
+
+    // --- 3. SOS Cluster Component ---
     // Count SOS alerts within 2000m radius in last 7 days (Extended from 30 mins)
     const sosHighPriority = await SOSAlert.countDocuments({
         location: {
@@ -93,17 +145,19 @@ async function processGrid(gridId) {
 
     // --- 2. Incident Component (Crowdsourced Reports) ---
     // Search larger radius (3.5km) for incidents, decays over 7 days
-    const incidents = await Incident.find({
-        location: {
-            $geoWithin: {
-                $centerSphere: [ [lng, lat], 3500 / 6378100 ] // 3500 meters in radians
-            }
-        },
-        timestamp: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
-    });
+    // const incidents = await Incident.find({
+    //     location: {
+    //         $geoWithin: {
+    //             $centerSphere: [ [lng, lat], 3500 / 6378100 ] // 3500 meters in radians
+    //         }
+    //     },
+    //     timestamp: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+    // });
     
     let incidentScore = 0;
     let maxIncidentSeverity = 0; // Track the single highest severity event
+
+    
 
     if (incidents.length > 0) {
         const totalImpact = incidents.reduce((acc, inc) => {
@@ -170,14 +224,16 @@ async function processGrid(gridId) {
     else if (finalScore >= 0.6) level = 'High';
     else if (finalScore >= 0.3) level = 'Medium';
 
-    // Save to DB
+    // Save to DB with reasons
     await RiskGrid.findOneAndUpdate(
         { gridId },
         {
             location: { type: "Point", coordinates: [lng, lat] },
             riskScore: finalScore,
             riskLevel: level,
-            lastUpdated: new Date()
+            lastUpdated: new Date(),
+            reasons: top10Reasons, // Store top 10 most recent events
+            gridName: gridName // Preserve or update grid name
         },
         { upsert: true, new: true }
     );

@@ -17,3 +17,7 @@ testFile.js
 test-db-connection.js
 
 /tests
+
+*.code-workspace
+
+zone-visualization-demo.html

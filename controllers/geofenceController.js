@@ -1,6 +1,6 @@
 const Transition = require('../models/Transition');
 const { CustomError } = require('../middlewares/errorMiddleware');
-const DangerZone = require('../models/Geofence');
+const { DangerZone, Geofence } = require('../models/Geofence');
 const RiskGrid = require('../models/RiskGrid');
 const { updateRiskScores } = require('../services/riskEngineService');
 
@@ -134,7 +134,7 @@ exports.getDynamicRiskZones = async (req, res, next) => {
     const { lat, lng, radius = 5000 } = req.query;
 
     // Config: Grid size (must match service) - NOW 500m
-    const GRID_SIZE_DEG = 0.0045;
+    const GRID_SIZE_DEG = 0.0045; 
 
 
     let grids;
@@ -151,8 +151,7 @@ exports.getDynamicRiskZones = async (req, res, next) => {
       });
     }
 
-    // Transform to GeoJSON FEATURE COLLECTION
-    // Sending POINT geometry now, so frontend can draw CIRCLES
+    // Transform to GeoJSON FEATURE COLLECTION with visual styling
     const geoJSON = {
       type: "FeatureCollection",
       features: grids.map(g => ({
@@ -161,8 +160,19 @@ exports.getDynamicRiskZones = async (req, res, next) => {
           gridId: g.gridId,
           riskScore: g.riskScore,
           riskLevel: g.riskLevel,
-          gridName: g.gridName, // Include Name
-          lastUpdated: g.lastUpdated
+          gridName: g.gridName,
+          lastUpdated: g.lastUpdated,
+          // Include visual styling for map rendering
+          visualStyle: g.visualStyle || {
+            zoneType: "risk_grid",
+            borderStyle: "dashed",
+            borderWidth: 2,
+            fillOpacity: 0.4,
+            fillPattern: "dots",
+            iconType: "incident-marker",
+            renderPriority: 2,
+            gridSize: 500
+          }
         },
         geometry: g.location // Send the Center Point directly
       }))
@@ -180,5 +190,108 @@ exports.triggerRiskUpdate = async (req, res, next) => {
     res.json({ message: "Risk scores updated successfully." });
   } catch (error) {
     next(error);
+  }
+};
+
+// @desc    Create a geofence for tourist destination
+// @route   POST /api/geofences/destination
+// @access  Private (authority/admin)
+exports.createDestinationGeofence = async (req, res, next) => {
+  try {
+    const geofence = new Geofence(req.body);
+    await geofence.save();
+    
+    // Emit real-time geofence update
+    // const realtimeService = require('../services/realtimeService');
+    // realtimeService.emitGeofenceAdded({
+    //   id: geofence.id || geofence._id,
+    //   name: geofence.name,
+    //   destination: geofence.destination,
+    //   type: 'geofence',
+    //   shape: geofence.type,
+    //   coordinates: geofence.coords,
+    //   radius: geofence.radiusKm ? geofence.radiusKm * 1000 : 0,
+    //   visualStyle: geofence.visualStyle
+    // }).catch(err => console.error("Socket emit error:", err));
+
+    res.status(201).json({ 
+      message: "Destination geofence created successfully", 
+      data: geofence 
+    });
+  } catch (error) {
+    console.error("Error creating destination geofence:", error);
+    next(error);
+  }
+};
+
+// @desc    Get all destination geofences
+// @route   GET /api/geofences/destinations
+// @access  Public
+exports.getAllDestinationGeofences = async (req, res, next) => {
+  try {
+    const geofences = await Geofence.find({ isActive: true });
+    res.json(geofences);
+  } catch (err) {
+    console.error("Error fetching geofences:", err);
+    next(err);
+  }
+};
+
+// @desc    Get all zones with visual styling (combined endpoint)
+// @route   GET /api/geofences/all-zones-styled
+// @access  Public
+exports.getAllZonesWithStyling = async (req, res, next) => {
+  try {
+    // Fetch all three types of zones
+    const dangerZones = await DangerZone.find();
+    const riskGrids = await RiskGrid.find().limit(100);
+    const geofences = await Geofence.find({ isActive: true });
+
+    // Transform to a unified response with visual styling
+    const response = {
+      dangerZones: dangerZones.map(zone => ({
+        ...zone.toObject(),
+        visualStyle: zone.visualStyle || {
+          zoneType: "danger_zone",
+          borderStyle: "solid",
+          borderWidth: 3,
+          fillOpacity: 0.25,
+          fillPattern: "diagonal-stripes",
+          iconType: "warning-triangle",
+          renderPriority: 1
+        }
+      })),
+      riskGrids: riskGrids.map(grid => ({
+        ...grid.toObject(),
+        visualStyle: grid.visualStyle || {
+          zoneType: "risk_grid",
+          borderStyle: "dashed",
+          borderWidth: 2,
+          fillOpacity: 0.4,
+          fillPattern: "dots",
+          iconType: "incident-marker",
+          renderPriority: 2,
+          gridSize: 500
+        }
+      })),
+      geofences: geofences.map(fence => ({
+        ...fence.toObject(),
+        visualStyle: fence.visualStyle || {
+          zoneType: "geofence",
+          borderStyle: "dotted",
+          borderWidth: 2,
+          fillOpacity: 0.15,
+          fillPattern: "solid",
+          iconType: "shield",
+          renderPriority: 3,
+          color: "blue"
+        }
+      }))
+    };
+
+    res.json(response);
+  } catch (err) {
+    console.error("Error fetching all zones:", err);
+    next(err);
   }
 };

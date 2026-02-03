@@ -31,6 +31,51 @@ const DangerZoneSchema = new mongoose.Schema({
   riskLevel: { type: String, enum: ["Low", "Medium", "High", "Very High"] },
   source: { type: String },
   raw: { type: RawInfoSchema },                           // keep original raw metadata
+  
+  // Visual styling properties to differentiate from risk grids and geofences
+  visualStyle: {
+    zoneType: { type: String, default: "danger_zone" },   // Identifies this as a danger zone
+    borderStyle: { type: String, default: "solid" },      // solid, dashed, dotted
+    borderWidth: { type: Number, default: 3 },            // pixels
+    fillOpacity: { type: Number, default: 0.25 },         // 0-1 (25% transparency)
+    fillPattern: { type: String, default: "diagonal-stripes" }, // diagonal-stripes, dots, solid
+    iconType: { type: String, default: "warning-triangle" },     // Icon to show on map
+    renderPriority: { type: Number, default: 1 }          // 1=bottom, 3=top layer
+  }
 }, { timestamps: true });
 
-module.exports = mongoose.model("DangerZone", DangerZoneSchema);
+// Tourist Destination Geofence Schema (for alerting tourists when leaving safe areas)
+const GeofenceSchema = new mongoose.Schema({
+  name: { type: String, required: true },                 // "Taj Mahal Area", "Goa Beach Zone"
+  destination: { type: String, required: true },          // Tourist destination name
+  type: { type: String, enum: ["circle", "polygon"], required: true },
+  coords: {                                               // [lat, lng] - center point
+    type: [Number],
+    required: true,
+    validate: {
+      validator: arr => arr.length === 2,
+      message: "Coords must be [latitude, longitude]"
+    }
+  },
+  radiusKm: { type: Number },                            // For circle geofences
+  polygonCoords: [[Number]],                             // For polygon geofences [[lng,lat],...]
+  isActive: { type: Boolean, default: true },
+  alertMessage: { type: String, default: "You are leaving the safe tourist area" },
+  
+  // Visual styling properties to differentiate from danger zones and risk grids
+  visualStyle: {
+    zoneType: { type: String, default: "geofence" },      // Identifies this as a geofence
+    borderStyle: { type: String, default: "dotted" },     // solid, dashed, dotted
+    borderWidth: { type: Number, default: 2 },            // pixels
+    fillOpacity: { type: Number, default: 0.15 },         // 0-1 (15% transparency - most transparent)
+    fillPattern: { type: String, default: "solid" },      // diagonal-stripes, dots, solid
+    iconType: { type: String, default: "shield" },        // Icon to show on map
+    renderPriority: { type: Number, default: 3 },         // 1=bottom, 3=top layer
+    color: { type: String, default: "blue" }              // Base color (for non-severity zones)
+  }
+}, { timestamps: true });
+
+module.exports = {
+  DangerZone: mongoose.model("DangerZone", DangerZoneSchema),
+  Geofence: mongoose.model("Geofence", GeofenceSchema)
+};

@@ -416,6 +416,87 @@ Report/create a new incident (crowdsourced incident reporting).
 
 ### Geofence & Danger Zones (`/api/geofence`)
 
+> **📌 NEW: Zone Visual Differentiation**  
+> All zones now include visual styling properties to differentiate them on maps. See [Zone Visual Differentiation Guide](docs/Zone_Visual_Differentiation.md) for details.
+>
+> **Three Zone Types:**
+>
+> - **Danger Zones** (⚠️) - Solid border, diagonal stripes, static pre-seeded areas
+> - **Risk Grids** (📍) - Dashed border, dots pattern, dynamic incident zones (last 7 days)
+> - **Geofences** (🛡️) - Dotted border, blue color, tourist destination boundaries
+
+#### `GET /api/geofence/all-zones-styled`
+
+Get all zones (danger zones, risk grids, geofences) with visual styling properties for map rendering.
+
+**Response** (200 OK):
+
+```json
+{
+  "dangerZones": [
+    {
+      "id": "disaster-0",
+      "name": "Kashmir Border Region",
+      "riskLevel": "High",
+      "coords": [34.0837, 74.7973],
+      "radiusKm": 50,
+      "visualStyle": {
+        "zoneType": "danger_zone",
+        "borderStyle": "solid",
+        "borderWidth": 3,
+        "fillOpacity": 0.25,
+        "fillPattern": "diagonal-stripes",
+        "iconType": "warning-triangle",
+        "renderPriority": 1
+      }
+    }
+  ],
+  "riskGrids": [
+    {
+      "gridId": "23.2599_77.4126",
+      "riskLevel": "Medium",
+      "riskScore": 0.45,
+      "gridName": "New Market, Bhopal",
+      "location": {
+        "type": "Point",
+        "coordinates": [77.4126, 23.2599]
+      },
+      "visualStyle": {
+        "zoneType": "risk_grid",
+        "borderStyle": "dashed",
+        "borderWidth": 2,
+        "fillOpacity": 0.4,
+        "fillPattern": "dots",
+        "iconType": "incident-marker",
+        "renderPriority": 2,
+        "gridSize": 500
+      }
+    }
+  ],
+  "geofences": [
+    {
+      "id": "taj-mahal-fence",
+      "name": "Taj Mahal Safe Area",
+      "destination": "Taj Mahal",
+      "coords": [27.1751, 78.0421],
+      "radiusKm": 2,
+      "visualStyle": {
+        "zoneType": "geofence",
+        "borderStyle": "dotted",
+        "borderWidth": 2,
+        "fillOpacity": 0.15,
+        "fillPattern": "solid",
+        "iconType": "shield",
+        "renderPriority": 3,
+        "color": "blue"
+      }
+    }
+  ]
+}
+```
+
+---
+
 #### `GET /api/geofence/`
 
 Get list of all geofence zones (static danger zones).
@@ -436,6 +517,73 @@ Get list of all geofence zones (static danger zones).
     }
   }
 ]
+```
+
+---
+
+#### `GET /api/geofence/destinations`
+
+Get all active tourist destination geofences (blue safe zones).
+
+**Response** (200 OK):
+
+```json
+[
+  {
+    "_id": "507f191e810c19729de860ed",
+    "id": "taj-mahal-fence",
+    "name": "Taj Mahal Safe Area",
+    "destination": "Taj Mahal",
+    "type": "circle",
+    "coords": [27.1751, 78.0421],
+    "radiusKm": 2,
+    "isActive": true,
+    "alertMessage": "You are leaving the safe tourist area",
+    "visualStyle": {
+      "zoneType": "geofence",
+      "borderStyle": "dotted",
+      "color": "blue"
+    }
+  }
+]
+```
+
+---
+
+#### `POST /api/geofence/destination`
+
+Create a new tourist destination geofence (requires authentication).
+
+**Request Body**:
+
+```json
+{
+  "id": "gateway-of-india-fence",
+  "name": "Gateway of India Safe Zone",
+  "destination": "Gateway of India",
+  "type": "circle",
+  "coords": [18.922, 72.8347],
+  "radiusKm": 1.5,
+  "alertMessage": "You are leaving the Gateway of India tourist area"
+}
+```
+
+**Response** (201 Created):
+
+```json
+{
+  "message": "Destination geofence created successfully",
+  "data": {
+    "_id": "507f191e810c19729de860ee",
+    "id": "gateway-of-india-fence",
+    "name": "Gateway of India Safe Zone",
+    "visualStyle": {
+      "zoneType": "geofence",
+      "borderStyle": "dotted",
+      "color": "blue"
+    }
+  }
+}
 ```
 
 ---
