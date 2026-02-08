@@ -1,5 +1,5 @@
 const SOSAlert = require('../models/SOSAlertModel');
-const DangerZone = require("../models/Geofence");
+const { DangerZone } = require("../models/Geofence");
 const { CustomError } = require('../middlewares/errorMiddleware');
 const Tourist = require('../models/Tourist');
 const { decrypt } = require('../utils/encrypt');

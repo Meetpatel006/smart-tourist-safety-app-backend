@@ -9,6 +9,9 @@ const riskGridSchema = new mongoose.Schema({
   riskScore: { type: Number, default: 0, min: 0, max: 1 },
   lastUpdated: { type: Date, default: Date.now },
   riskLevel: { type: String, enum: ["Low", "Medium", "High", "Very High"], default: "Low" },
+  tierLevel: { type: String, enum: ["Standard", "High", "Critical"], default: "Standard" }, // Dynamic persistence tier
+  radius: { type: Number, default: 500 }, // Display radius in meters
+  expiresAt: { type: Date }, // When this grid should naturally expire
   gridName: { type: String, default: "Unknown Zone" }, // Human readable name
   
   // Reasons for risk grid creation (SOS alerts + incidents)

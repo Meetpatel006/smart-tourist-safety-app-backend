@@ -7,7 +7,7 @@ const { sha256Hex } = require("../utils/hash.js");
 const { hex64ToBytes32 } = require("../utils/ethFormat.js");
 const blockchain = require("../services/blockchainService.js");
 
-const { JWT_SECRET, JWT_EXPIRES_IN } = require("../config/config");
+const { JWT_SECRET, JWT_EXPIRES_IN , GOVID_SALT } = require("../config/config");
 
 exports.registerTourist = async (req, res, next) => {
   try {
@@ -66,7 +66,7 @@ exports.registerTourist = async (req, res, next) => {
     const passwordHash = await bcrypt.hash(password, salt);
 
     // Government ID hash
-    const govSalt = process.env.GOVID_SALT || "static-salt-for-dev";
+    const govSalt = GOVID_SALT 
     const govIdHash = sha256Hex(govId + govSalt);
 
     // Deterministic fields for blockchain/audit

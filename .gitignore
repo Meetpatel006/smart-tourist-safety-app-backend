@@ -2,22 +2,13 @@
 
 node_modules
 
-scripts
-
-dynamic-danger-zone.md
-
-test-map.html
+scripts/
 
 *.md
-mock-auth-flow.html
 *.txt
-
-testFile.js
-
-test-db-connection.js
-
-/tests
 
 *.code-workspace
 
-zone-visualization-demo.html
+tests/
+logs/
+html-mock-up/

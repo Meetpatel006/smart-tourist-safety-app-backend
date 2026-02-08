@@ -2,27 +2,6 @@ const {config} = require("dotenv");
 
 config({path : `.env`});
 
-const {
-    PORT,
-    MONGO_URI,
-    JWT_SECRET,
-    JWT_EXPIRES_IN,
-    POLYGON_RPC,
-    SMART_CONTRACT_ADDRESS,
-    SMART_CONTRACT_ADDRESS_reg,
-    SMART_CONTRACT_ADDRESS_sos,
-    PRIVATE_KEY,
-    SERVER_URL,
-    CLOUDINARY_NAME,
-    CLOUDINARY_KEY,
-    CLOUDINARY_SECRET,
-    ENCRYPTION_KEY,
-    NEWS_API_KEY,
-    MAPBOX_ACCESS_TOKEN,
-    RESEND_API_KEY,
-    FROM_EMAIL
-} = process.env;
-
 module.exports = {
     PORT,
     MONGO_URI,
@@ -34,12 +13,11 @@ module.exports = {
     SMART_CONTRACT_ADDRESS_sos,
     PRIVATE_KEY,
     SERVER_URL,
-    CLOUDINARY_NAME,
-    CLOUDINARY_KEY,
-    CLOUDINARY_SECRET,
+    GOVID_SALT,
     ENCRYPTION_KEY,
-    NEWS_API_KEY,
     MAPBOX_ACCESS_TOKEN,
     RESEND_API_KEY,
-    FROM_EMAIL
-};
+    FROM_EMAIL,
+    REDIS_PORT,
+    REDIS_HOST
+} = process.env;

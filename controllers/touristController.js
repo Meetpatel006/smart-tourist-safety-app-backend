@@ -9,7 +9,7 @@ const { decrypt } = require("../utils/encrypt.js");
 
 exports.getTouristById = async (req, res, next) => {
   try {
-    console.log("Tourist ID from request:", req.user.touristId);
+    // console.log("Tourist ID from request:", req.user.touristId);
     const touristId = req.user.touristId;
 
     // Find tourist by touristId
@@ -19,28 +19,28 @@ exports.getTouristById = async (req, res, next) => {
       return res.status(404).json({ error: "Tourist not found" });
     }
 
-    console.log("Tourist found:", tourist);
+    // console.log("Tourist found:", tourist);
 
-    let decryptedItinerary = null;
+    // let decryptedItinerary = null;
 
-    if (tourist.dayWiseItineraryEncrypted && tourist.dayWiseItineraryEncrypted.length > 0) {
-      try {
-        console.log("Encrypted itinerary array:", tourist.dayWiseItineraryEncrypted);
+    // if (tourist.dayWiseItineraryEncrypted && tourist.dayWiseItineraryEncrypted.length > 0) {
+    //   try {
+    //     // console.log("Encrypted itinerary array:", tourist.dayWiseItineraryEncrypted);
 
-        decryptedItinerary = tourist.dayWiseItineraryEncrypted.map(item => {
-          const decryptedString = decrypt(item);
-          console.log("Decrypted itinerary string:", decryptedString);
-          return JSON.parse(decryptedString);
-        });
+    //     decryptedItinerary = tourist.dayWiseItineraryEncrypted.map(item => {
+    //       const decryptedString = decrypt(item);
+    //       console.log("Decrypted itinerary string:", decryptedString);
+    //       return JSON.parse(decryptedString);
+    //     });
 
-        console.log("Decrypted itinerary object:", decryptedItinerary);
+    //     // console.log("Decrypted itinerary object:", decryptedItinerary);
 
-      } catch (error) {
-        console.error("Error decrypting itinerary:", error);
-      }
-    } else {
-      console.log("dayWiseItineraryEncrypted field is null or missing");
-    }
+    //   } catch (error) {
+    //     console.error("Error decrypting itinerary:", error);
+    //   }
+    // } else {
+    //   console.log("dayWiseItineraryEncrypted field is null or missing");
+    // }
 
     const safeData = {
       touristId: tourist.touristId,
@@ -49,7 +49,7 @@ exports.getTouristById = async (req, res, next) => {
       email: tourist.email,
       role: tourist.role, // IMPORTANT: Include role for frontend authorization
       groupId: tourist.groupId || null, // Include groupId for group members
-      dayWiseItinerary: decryptedItinerary, // updated field name
+      dayWiseItinerary: tourist.dayWiseItinerary, // updated field name
       emergencyContact: tourist.emergencyContactEncrypted
         ? JSON.parse(decrypt(tourist.emergencyContactEncrypted))
         : null,

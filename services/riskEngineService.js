@@ -4,8 +4,8 @@ const SOSAlert = require('../models/SOSAlertModel');
 const { getGridName } = require('../utils/mapboxClient');
 
 // Constants
-const GRID_SIZE_DEG = 0.0045; // Approx 500m (Reverted from 3km)
-const LAMBDA = 0.01; // Time decay factor (Reduced for 7-day persistence)
+const GRID_SIZE_DEG = 0.0045; // Approx 500m
+// Lambda will be calculated dynamically based on tier duration
 
 // Weights (Tuned to increase Incident impact)
 const W_INCIDENT = 0.40;
@@ -30,12 +30,14 @@ function getGridIdAndCenter(lat, lng) {
 async function updateRiskScores() {
     console.log("🔄 Running Global Risk Update Job...");
 
-    // 1. Identify all grids that need updates (from recent activity or existing records)
+    // 1. Identify all grids that need updates (activity within 30 days)
     const activeGridIds = new Set();
+    const LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+    const windowStart = new Date(Date.now() - LOOKBACK_MS);
     
-    // A. Grids with recent SOS alerts (last 7 days)
+    // A. Grids with recent SOS alerts (last 30 days)
     const recentSOS = await SOSAlert.find({ 
-        timestamp: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } 
+        timestamp: { $gte: windowStart } 
     });
     recentSOS.forEach(alert => {
         if(alert.location && alert.location.coordinates) {
@@ -44,9 +46,9 @@ async function updateRiskScores() {
         }
     });
 
-    // B. Grids with recent Incidents (last 7 days)
+    // B. Grids with recent Incidents (last 30 days)
     const recentIncidents = await Incident.find({
-        timestamp: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+        timestamp: { $gte: windowStart }
     });
     recentIncidents.forEach(inc => {
         if(inc.location && inc.location.coordinates) {
@@ -55,7 +57,7 @@ async function updateRiskScores() {
         }
     });
     
-    // C. Existing grids (to update decay)
+    // C. Existing grids
     const existingGrids = await RiskGrid.find({});
     existingGrids.forEach(g => activeGridIds.add(g.gridId));
 
@@ -75,146 +77,134 @@ async function processGrid(gridId) {
     const [latStr, lngStr] = gridId.split('_');
     const lat = parseFloat(latStr);
     const lng = parseFloat(lngStr);
-
-    // --- 1. Query SOS Alerts and Incidents for Reasons ---
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     
-    // Get SOS alerts within 2km radius
+    // Always scan 30 days back to catch high-severity history
+    const LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+    const windowStart = new Date(Date.now() - LOOKBACK_MS);
+
+    // --- 1. Fetch Data (Maximum Scan Radius: 2.5km) ---
+    // We scan the maximum possible influence area (Critical Tier = 2.5km)
+    
     const sosAlerts = await SOSAlert.find({
-        location: {
-            $geoWithin: {
-                $centerSphere: [ [lng, lat], 2000 / 6378100 ]
-            }
-        },
-        timestamp: { $gte: sevenDaysAgo }
-    }).select('sosReason.reason timestamp safetyScore').lean();
+        location: { $geoWithin: { $centerSphere: [ [lng, lat], 2500 / 6378100 ] } },
+        timestamp: { $gte: windowStart }
+    }).lean();
 
-    // Get incidents within 3.5km radius
     const incidents = await Incident.find({
-        location: {
-            $geoWithin: {
-                $centerSphere: [ [lng, lat], 3500 / 6378100 ]
-            }
-        },
-        timestamp: { $gte: sevenDaysAgo }
-    }).select('title type severity timestamp').lean();
+        location: { $geoWithin: { $centerSphere: [ [lng, lat], 2500 / 6378100 ] } },
+        timestamp: { $gte: windowStart }
+    }).lean();
 
-    // --- 2. Build Reasons Array (Top 10 Most Recent) ---
-    const reasons = [];
+    // --- 2. Analyze Intensity Metrics ---
     
-    // Add SOS alerts
-    sosAlerts.forEach(sos => {
-        reasons.push({
-            type: 'sos_alert',
-            title: sos.sosReason?.reason || 'SOS Alert',
-            timestamp: sos.timestamp,
-            severity: sos.safetyScore, // Store safetyScore (0-100)
-            eventType: 'sos' // Will be replaced with category when SOS categorization is implemented
-        });
+    let maxIncidentSeverity = 0;
+    let minSosSafetyScore = 100;
+    let latestEventTime = 0;
+    
+    // Process SOS
+    sosAlerts.forEach(a => {
+        const time = new Date(a.timestamp).getTime();
+        if (time > latestEventTime) latestEventTime = time;
+        if (a.safetyScore !== undefined && a.safetyScore < minSosSafetyScore) {
+            minSosSafetyScore = a.safetyScore;
+        }
     });
-    
-    // Add incidents
-    incidents.forEach(inc => {
-        reasons.push({
-            type: 'incident',
-            title: inc.title || 'Incident',
-            timestamp: inc.timestamp,
-            severity: inc.severity, // 0-1
-            eventType: inc.type // theft, assault, etc.
-        });
+
+    // Process Incidents
+    incidents.forEach(i => {
+        const time = new Date(i.timestamp).getTime();
+        if (time > latestEventTime) latestEventTime = time;
+        if (i.severity > maxIncidentSeverity) maxIncidentSeverity = i.severity;
     });
-    
-    // Sort by timestamp (most recent first) and limit to 10
-    reasons.sort((a, b) => b.timestamp - a.timestamp);
-    const top10Reasons = reasons.slice(0, 10);
 
-    // --- 3. SOS Cluster Component ---
-    // Count SOS alerts within 2000m radius in last 7 days (Extended from 30 mins)
-    const sosHighPriority = await SOSAlert.countDocuments({
-        location: {
-            $geoWithin: {
-                $centerSphere: [ [lng, lat], 2000 / 6378100 ] // 2000 meters in radians
-            }
-        },
-        timestamp: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } 
-    });
-    
-    // 3 SOS alerts = Max Risk (1.0)
-    let sosScore = Math.min(sosHighPriority / 3, 1.0);
+    const combinedCount = sosAlerts.length + incidents.length;
 
-
-    // --- 2. Incident Component (Crowdsourced Reports) ---
-    // Search larger radius (3.5km) for incidents, decays over 7 days
-    // const incidents = await Incident.find({
-    //     location: {
-    //         $geoWithin: {
-    //             $centerSphere: [ [lng, lat], 3500 / 6378100 ] // 3500 meters in radians
-    //         }
-    //     },
-    //     timestamp: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
-    // });
+    // --- 3. Determine Tier & Expiry ---
     
+    let tier = 'Standard';
+    let durationDays = 7;
+    let displayRadius = 500; // meters
+
+    // Logic: Active SOS cluster (>5) or Major Riot/Terror (>0.8) or Very Low Safety (<=30)
+    if (combinedCount > 5 || maxIncidentSeverity >= 0.8 || minSosSafetyScore <= 30) {
+        tier = 'Critical';
+        durationDays = 30;
+        displayRadius = 1500;
+    } 
+    // Logic: Moderate Cluster (>2) or High Severity (>0.6) or Low Safety (<=50)
+    else if (combinedCount > 2 || maxIncidentSeverity >= 0.6 || minSosSafetyScore <= 50) {
+        tier = 'High';
+        durationDays = 14;
+        displayRadius = 1000;
+    }
+
+    // Default is Standard (7 days, 500m)
+
+    // Calculate Expiry
+    // If no events found, latestEventTime is 0, so expiresAt is past (correct)
+    const expiresAt = new Date(latestEventTime + (durationDays * 24 * 60 * 60 * 1000));
+    
+    // Check if Expired
+    if (Date.now() > expiresAt.getTime()) {
+        // Expired -> Delete Grid from Database to cleanup
+        console.log(`Grid ${gridId} expired (Tier: ${tier}). Deleting.`);
+        
+        await RiskGrid.deleteOne({ gridId });
+        return;
+    }
+
+    // --- 4. Calculate Risk Score (with Dynamic Decay) ---
+    
+    // Dynamic Lambda based on Tier duration
+    // Formula: We want ~10% remaining at 'durationDays'.
+    // lambda = -ln(0.1) / (days * 24) = 2.3 / (days * 24)
+    
+    const lambda = 2.3 / (durationDays * 24);
+
+    let sosScore = 0;
+    if (sosAlerts.length > 0) {
+        const SOS_BASE_WEIGHT = 0.34;
+        const totalSosImpact = sosAlerts.reduce((acc, alert) => {
+            const hoursAgo = (Date.now() - alert.timestamp) / (1000 * 60 * 60);
+            return acc + (SOS_BASE_WEIGHT * Math.exp(-lambda * hoursAgo));
+        }, 0);
+        sosScore = Math.min(totalSosImpact, 1.0);
+    }
+
     let incidentScore = 0;
-    let maxIncidentSeverity = 0; // Track the single highest severity event
-
-    
-
     if (incidents.length > 0) {
         const totalImpact = incidents.reduce((acc, inc) => {
             const hoursAgo = (Date.now() - inc.timestamp) / (1000 * 60 * 60);
-            
-            // Track max severity for override logic later
-            // We also apply time decay to this max check so old severe events fade away
-            const currentSeverity = inc.severity * Math.exp(-LAMBDA * hoursAgo);
-            if(currentSeverity > maxIncidentSeverity) maxIncidentSeverity = currentSeverity;
-
+            const currentSeverity = (inc.severity || 0.5) * Math.exp(-lambda * hoursAgo);
             return acc + currentSeverity;
         }, 0);
         incidentScore = Math.min(totalImpact, 1.0);
     }
 
-
-    // --- 3. Historical Component ---
+    // History (Self-Referential Decay)
     let historyScore = 0;
     let gridName = null;
-    
     const prevGrid = await RiskGrid.findOne({ gridId });
     if (prevGrid) {
-        // Get previous score but apply time decay
-        // If no new events, this will slowly drag the score down to 0
         const hoursSinceUpdate = (Date.now() - prevGrid.lastUpdated) / (1000 * 60 * 60);
-        historyScore = prevGrid.riskScore * Math.exp(-0.1 * hoursSinceUpdate); 
-        
-        // Preserve existing name to avoid API calls
+        historyScore = prevGrid.riskScore * Math.exp(-lambda * hoursSinceUpdate);
         if (prevGrid.gridName && !prevGrid.gridName.startsWith('Zone [')) {
             gridName = prevGrid.gridName;
         }
     }
-
-    // Fetch Name from Mapbox if missing
+    
     if (!gridName) {
         gridName = await getGridName(lat, lng);
     }
 
-    // --- Final Calculation ---
-    // Combine and clamp
-    // E.g. (0.25 * incident) + (0.65 * sos) + (0.1 * history) 
-    // Max sum ~1.0.
-    
+    // Weighted Sum
     let finalScore = (W_INCIDENT * incidentScore) + (W_SOS * sosScore) + (W_HISTORY * historyScore);
-    
-    // Extra Logic: If there is an active SOS cluster, force HIGH risk regardless of history
-    if (sosHighPriority >= 3) {
-        finalScore = Math.max(finalScore, 0.85); // Force Very High
-    }
 
-    // Critical Incident Override: 
-    // If a single incident is very severe (e.g. Riot > 0.8), force High/Very High immediately 
-    // regardless of the weighted average.
-    if (maxIncidentSeverity > 0.8) {
-        finalScore = Math.max(finalScore, 0.85); // Force Very High
-    } else if (maxIncidentSeverity > 0.6) {
-        finalScore = Math.max(finalScore, 0.65); // Force High
+    // Force High Risk if Active Critical Tier
+    if (tier === 'Critical') {
+        finalScore = Math.max(finalScore, 0.6); // Floor at High Risk until expiry nears
+    } else if (tier === 'High') {
+        finalScore = Math.max(finalScore, 0.4); // Floor at Medium Risk
     }
 
     finalScore = Math.min(Math.max(finalScore, 0), 1);
@@ -224,16 +214,40 @@ async function processGrid(gridId) {
     else if (finalScore >= 0.6) level = 'High';
     else if (finalScore >= 0.3) level = 'Medium';
 
-    // Save to DB with reasons
+
+    // --- 5. Build Reasons ---
+    const reasons = [];
+    sosAlerts.forEach(sos => reasons.push({
+        type: 'sos_alert',
+        title: sos.sosReason?.reason || 'SOS Alert',
+        timestamp: sos.timestamp,
+        severity: sos.safetyScore || 1.0, 
+        eventType: 'sos'
+    }));
+    incidents.forEach(inc => reasons.push({
+        type: 'incident',
+        title: inc.title || 'Incident',
+        timestamp: inc.timestamp,
+        severity: inc.severity,
+        eventType: inc.type
+    }));
+    
+    reasons.sort((a, b) => b.timestamp - a.timestamp);
+    const topReasons = reasons.slice(0, 10);
+
+    // Save
     await RiskGrid.findOneAndUpdate(
         { gridId },
         {
             location: { type: "Point", coordinates: [lng, lat] },
             riskScore: finalScore,
             riskLevel: level,
+            tierLevel: tier,
+            radius: displayRadius,
+            expiresAt: expiresAt,
             lastUpdated: new Date(),
-            reasons: top10Reasons, // Store top 10 most recent events
-            gridName: gridName // Preserve or update grid name
+            gridName: gridName,
+            reasons: topReasons
         },
         { upsert: true, new: true }
     );
