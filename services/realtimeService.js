@@ -7,6 +7,7 @@ let io; // This will hold the Socket.IO server instance
 let authoritySockets = new Map(); // Map to store connected authorities
 let touristSockets = new Map(); // Map to store connected tourists
 let touristLastScores = new Map(); // Store last safety score for each tourist
+let touristLastLocations = new Map();
 const SAFETY_POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 let safetyPollTimer = null;
 
@@ -68,6 +69,14 @@ exports.init = (httpServer) => {
         socket.data.touristId = touristId;
         socket.data.userType = 'tourist';
         socket.data.location = location; // Store current location
+        if (location && location.lat && location.lng) {
+          touristLastLocations.set(touristId, {
+            lat: location.lat,
+            lng: location.lng,
+            updatedAt: Date.now(),
+            lastCalcAt: 0
+          });
+        }
 
         // Add socket to the set for this touristId (allow multiple devices per tourist)
         let set = touristSockets.get(touristId);
@@ -113,9 +122,50 @@ exports.init = (httpServer) => {
       if (socket.data && socket.data.userType === 'tourist' && data.location) {
         const touristId = socket.data.touristId;
         const newLocation = data.location;
+        const now = Date.now();
 
+        // --- THROTTLING LOGIC ---
+        // 1. Get last processed state from socket data
+        if (!newLocation.lat || !newLocation.lng) return;
+
+        // Get canonical last known location for this tourist
+        const lastEntry = touristLastLocations.get(touristId);
+
+        const lastLoc = lastEntry
+          ? { lat: lastEntry.lat, lng: lastEntry.lng }
+          : null;
+
+        const lastCalcAt = (lastEntry && lastEntry.lastCalcAt) || 0;
+
+        // 2. Calculate distance moved if we have a previous location
+        let distanceMoved = 0;
+        if (lastLoc) {
+          distanceMoved = calculateDistance(
+            lastLoc.lat, lastLoc.lng,
+            newLocation.lat, newLocation.lng
+          );
+        }
+
+        // 3. Skip if update is too frequent (< 2 seconds) AND movement is insignificant (< 10 meters)
+        // We allow frequent updates only if the user is moving fast (e.g. driving)
+        const timeDiff = now - lastCalcAt;
+        if (lastLoc && timeDiff < 2000 && distanceMoved < 10) {
+          // Silently ignore strictly redundant updates to prevent log spam & race conditions
+          return;
+        }
+
+        // Update stored "last processed" state
         socket.data.location = newLocation;
-        console.log(`Tourist ${touristId} location updated: ${newLocation.lat}, ${newLocation.lng}`);
+        if (newLocation && newLocation.lat && newLocation.lng) {
+          touristLastLocations.set(touristId, {
+            lat: newLocation.lat,
+            lng: newLocation.lng,
+            updatedAt: now,
+            lastCalcAt: now
+          });
+        }
+
+        console.log(`Tourist ${touristId} moved ${Math.round(distanceMoved)}m. Updating score...`);
 
         // Calculate new safety score
         try {
@@ -194,12 +244,13 @@ exports.init = (httpServer) => {
           if (set.size === 0) {
             touristSockets.delete(tid);
             touristLastScores.delete(tid);
+            touristLastLocations.delete(tid); // cleanup location too
           } else {
             console.log(`Remaining tourist sockets for ${tid}: ${set.size}`);
           }
         }
       }
-      
+
       console.log(`Client disconnected: ${socket.id}`);
     });
   });
@@ -270,8 +321,8 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   const Δλ = (lon2 - lon1) * Math.PI / 180;
 
   const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-            Math.cos(φ1) * Math.cos(φ2) *
-            Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+    Math.cos(φ1) * Math.cos(φ2) *
+    Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 
   return R * c; // Distance in meters
@@ -313,7 +364,7 @@ exports.emitAuthorityAlertToTourists = async (alertData) => {
 
   // Generate unique alert ID
   const alertId = `auth-alert-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-  
+
   // Construct the alert payload to send to tourists
   const touristAlertPayload = {
     alertId: alertId,
@@ -359,7 +410,7 @@ exports.emitAuthorityAlertToTourists = async (alertData) => {
   for (let [touristId, socketSet] of touristSockets.entries()) {
     for (let socket of socketSet) {
       const touristLocation = socket.data.location;
-      
+
       if (touristLocation && touristLocation.lat && touristLocation.lng) {
         const distance = calculateDistance(
           targetLat,
@@ -437,13 +488,16 @@ async function runPeriodicSafetyScoreUpdate() {
   if (!io) return;
 
   for (const [touristId, socketSet] of touristSockets.entries()) {
-    // Use first socket's stored location as canonical for this tourist
-    const firstSocket = socketSet.values().next().value;
-    const loc = firstSocket && firstSocket.data && firstSocket.data.location;
+    if (!socketSet || socketSet.size === 0) continue;
+
+    // Use canonical last known location (not dependent on socket ordering)
+    const loc = touristLastLocations.get(touristId);
+
     if (!loc || !loc.lat || !loc.lng) continue;
 
     try {
       const safetyScoreData = await calculateSafetyScore(loc.lat, loc.lng);
+
       const previousScore = touristLastScores.get(touristId) || 80;
       const newScore = safetyScoreData.safetyScore;
 
@@ -454,7 +508,10 @@ async function runPeriodicSafetyScoreUpdate() {
       for (const socket of socketSet) {
         socket.emit('safetyScoreUpdate', safetyScoreData);
       }
-      console.log(`📡 safetyScoreUpdate emitted (periodic) to ${touristId}: ${newScore}/100`);
+
+      console.log(
+        `📡 safetyScoreUpdate emitted (periodic) to ${touristId}: ${newScore}/100 (loc updatedAt=${loc.updatedAt})`
+      );
 
       // Notify only if significant change
       const notification = shouldNotifyScoreChange(previousScore, newScore);
@@ -467,6 +524,7 @@ async function runPeriodicSafetyScoreUpdate() {
             safetyScoreData
           });
         }
+
         console.log(`⚠️ Periodic safety score alert for ${touristId}: ${previousScore} → ${newScore}`);
       }
     } catch (error) {

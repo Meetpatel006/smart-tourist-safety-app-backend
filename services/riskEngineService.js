@@ -35,9 +35,10 @@ async function updateRiskScores() {
     const LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
     const windowStart = new Date(Date.now() - LOOKBACK_MS);
     
-    // A. Grids with recent SOS alerts (last 30 days)
+    // A. Grids with recent SOS alerts (last 30 days) AND Check only NEW alerts
     const recentSOS = await SOSAlert.find({ 
-        timestamp: { $gte: windowStart } 
+        timestamp: { $gte: windowStart },
+        status: 'new' 
     });
     recentSOS.forEach(alert => {
         if(alert.location && alert.location.coordinates) {
@@ -85,9 +86,11 @@ async function processGrid(gridId) {
     // --- 1. Fetch Data (Maximum Scan Radius: 2.5km) ---
     // We scan the maximum possible influence area (Critical Tier = 2.5km)
     
+    // FILTER: Only pick 'new' SOS alerts as requested (exclude acknowledged/responding)
     const sosAlerts = await SOSAlert.find({
         location: { $geoWithin: { $centerSphere: [ [lng, lat], 2500 / 6378100 ] } },
-        timestamp: { $gte: windowStart }
+        timestamp: { $gte: windowStart },
+        status: 'new'
     }).lean();
 
     const incidents = await Incident.find({
@@ -197,14 +200,37 @@ async function processGrid(gridId) {
         gridName = await getGridName(lat, lng);
     }
 
-    // Weighted Sum
-    let finalScore = (W_INCIDENT * incidentScore) + (W_SOS * sosScore) + (W_HISTORY * historyScore);
+    // --- Adaptive Weighting ---
+    // Problem: If there are NO incidents (only SOS), score is capped at 0.5 (Medium).
+    // Solution: If Incident Score is 0, shift weight to SOS so a pure SOS cluster can reach High/Critical levels.
+    let wIncident = W_INCIDENT;
+    let wSos = W_SOS;
+    
+    if (incidentScore === 0 && sosScore > 0) {
+        wIncident = 0.10; // Reduce incident weight temporarily
+        wSos = 0.80;      // Boost SOS weight to allow score > 0.8
+    }
 
-    // Force High Risk if Active Critical Tier
+    // Weighted Sum
+    let finalScore = (wIncident * incidentScore) + (wSos * sosScore) + (W_HISTORY * historyScore);
+
+    // --- Dynamic Floor Calculation ---
+    // Instead of a fixed floor, we use a sliding scale based on time remaining to prevent "cliff-edge" deletion.
+    
+    // Calculate progress (0.0 to 1.0)
+    const now = Date.now();
+    const expiryTime = expiresAt.getTime();
+    const totalDurationMs = durationDays * 24 * 60 * 60 * 1000;
+    
+    // Clamped between 0 and 1
+    const timeRemainingRatio = Math.max(0, Math.min(1, (expiryTime - now) / totalDurationMs));
+
     if (tier === 'Critical') {
-        finalScore = Math.max(finalScore, 0.6); // Floor at High Risk until expiry nears
+        const dynamicFloor = 0.8 * timeRemainingRatio; // Slides from 0.8 down to 0
+        finalScore = Math.max(finalScore, dynamicFloor); 
     } else if (tier === 'High') {
-        finalScore = Math.max(finalScore, 0.4); // Floor at Medium Risk
+        const dynamicFloor = 0.6 * timeRemainingRatio; // Slides from 0.6 down to 0
+        finalScore = Math.max(finalScore, dynamicFloor);
     }
 
     finalScore = Math.min(Math.max(finalScore, 0), 1);

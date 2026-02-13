@@ -178,6 +178,7 @@ async function calculateSafetyScore(lat, lng) {
     
     let totalPenalty = 0;
     const threats = [];
+    const penalizedGridZones = []; // Track penalized grids to avoid double counting
     
     // --- 1. Check nearby Risk Grids ---
     const nearbyRiskGrids = await RiskGrid.find({
@@ -210,13 +211,19 @@ async function calculateSafetyScore(lat, lng) {
         
         if (impact > 0) {
           totalPenalty += impact;
+          
+          // Store this grid's coverage to mask individual underlying events (SOS/Incidents)
+          // We use the grid radius itself for masking, as events inside are considered part of the grid
+          penalizedGridZones.push({ lat: gridLat, lng: gridLng, radius: gridRadius });
+
           threats.push({
             type: 'risk_grid',
             name: grid.gridName || 'Risk Zone',
             distance: Math.round(distance),
             severity: grid.riskLevel,
             impact: Math.round(impact),
-            coordinates: { lat: gridLat, lng: gridLng }
+            coordinates: { lat: gridLat, lng: gridLng },
+            reasons: grid.reasons || [] // Capture reasons from grid for description
           });
         }
       }
@@ -284,6 +291,7 @@ async function calculateSafetyScore(lat, lng) {
     const sosSince = new Date(Date.now() - CONFIG.SOS_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
     const nearbySOS = await SOSAlert.find({
       timestamp: { $gte: sosSince },
+      status: 'new', // Only penalize for active, unattended threats
       location: {
         $geoWithin: {
           $centerSphere: [[lng, lat], CONFIG.SOS_RADIUS_M / 6378100]
@@ -291,10 +299,22 @@ async function calculateSafetyScore(lat, lng) {
       }
     }).select('safetyScore timestamp sosReason location').limit(50).lean();
 
+    if (nearbySOS.length > 0) {
+      console.log(`⚠️ Found ${nearbySOS.length} nearby active SOS alerts`);
+    }
+
     for (const sos of nearbySOS) {
       const sLat = sos.location?.coordinates?.[1];
       const sLng = sos.location?.coordinates?.[0];
       if (sLat == null || sLng == null) continue;
+
+      // Check if this SOS is covered by an already penalized Risk Grid to avoid double-counting
+      const isCoveredByGrid = penalizedGridZones.some(grid => {
+        const distToGrid = calculateDistance(sLat, sLng, grid.lat, grid.lng);
+        return distToGrid <= grid.radius; 
+      });
+
+      if (isCoveredByGrid) continue;
 
       const distance = calculateDistance(lat, lng, sLat, sLng);
       const severity = Math.max(0, Math.min(1, (100 - (sos.safetyScore || 70)) / 100)); // lower safetyScore -> higher severity
@@ -302,9 +322,12 @@ async function calculateSafetyScore(lat, lng) {
 
       if (impact > 0) {
         totalPenalty += impact;
+        // Use standard format reason
+        const formattedReason = formatReasonText(sos.sosReason?.reason || 'Nearby SOS');
         threats.push({
           type: 'sos_alert',
-          name: sos.sosReason?.reason || 'Nearby SOS',
+          name: formattedReason,
+          category: 'SOS Alert', // Standard Category
           distance: Math.round(distance),
           severity: `safety:${sos.safetyScore || 'n/a'}`,
           impact: Math.round(impact),
@@ -324,10 +347,22 @@ async function calculateSafetyScore(lat, lng) {
       }
     }).select('severity title type timestamp location').limit(50).lean();
 
+    if (nearbyIncidents.length > 0) {
+      console.log(`⚠️ Found ${nearbyIncidents.length} nearby Incidents`);
+    }
+
     for (const inc of nearbyIncidents) {
       const iLat = inc.location?.coordinates?.[1];
       const iLng = inc.location?.coordinates?.[0];
       if (iLat == null || iLng == null) continue;
+
+      // Check if this Incident is covered by an already penalized Risk Grid to avoid double-counting
+      const isCoveredByGrid = penalizedGridZones.some(grid => {
+        const distToGrid = calculateDistance(iLat, iLng, grid.lat, grid.lng);
+        return distToGrid <= grid.radius; 
+      });
+
+      if (isCoveredByGrid) continue;
 
       const distance = calculateDistance(lat, lng, iLat, iLng);
       const severity = Math.max(0, Math.min(1, inc.severity || 0.6));
@@ -335,11 +370,16 @@ async function calculateSafetyScore(lat, lng) {
 
       if (impact > 0) {
         totalPenalty += impact;
+        // Prefer Type for category, Title for name
+        const category = formatReasonText(inc.type || 'Incident');
+        const name = formatReasonText(inc.title || 'Incident');
+        
         threats.push({
           type: 'incident',
-          name: inc.title || 'Incident',
+          name: name,
+          category: category,
           distance: Math.round(distance),
-          severity: inc.type || 'incident',
+          severity: inc.type || 'incident', 
           impact: Math.round(impact),
           timestamp: inc.timestamp
         });
@@ -354,43 +394,70 @@ async function calculateSafetyScore(lat, lng) {
     finalScore = Math.max(0, Math.min(100, finalScore));
     finalScore = Math.round(finalScore);
 
-    // --- 4. Determine Safety Level ---
+    // --- 6. Determine Safety Level & Description ---
+    
+    // Sort threats by impact (highest first) so we can prioritize reasons in description
+    threats.sort((a, b) => b.impact - a.impact);
+
     let safetyLevel = '';
     let safetyColor = '';
-    
+    let description = '';
+    const uniqueReasons = new Set(); // Use Set to avoid redundant reasons (e.g. "Riot" in Grid vs "Riot" Incident)
+
     if (finalScore >= 90) {
       safetyLevel = 'EXCELLENT';
       safetyColor = '#10b981'; // Green
+      description = 'Very Safe Area';
     } else if (finalScore >= 70) {
       safetyLevel = 'GOOD';
       safetyColor = '#3b82f6'; // Blue
+      description = 'Safe Area';
     } else if (finalScore >= 50) {
       safetyLevel = 'FAIR';
       safetyColor = '#f59e0b'; // Yellow
+      description = 'Moderate Risk';
     } else if (finalScore >= 30) {
       safetyLevel = 'POOR';
       safetyColor = '#ea580c'; // Orange
+      description = 'High Risk Area';
     } else {
       safetyLevel = 'CRITICAL';
       safetyColor = '#dc2626'; // Red
+      description = 'Danger Zone';
     }
 
-    // --- 5. Generate Description ---
-    let description = '';
-    if (finalScore >= 90) {
-      description = 'Very Safe Area • Low crime rate reported recently.';
-    } else if (finalScore >= 70) {
-      description = 'Safe Area • No major threats detected nearby.';
-    } else if (finalScore >= 50) {
-      description = 'Moderate Risk • Some incidents reported in the area.';
-    } else if (finalScore >= 30) {
-      description = 'High Risk Area • Multiple threats detected. Stay alert.';
-    } else {
-      description = 'Danger Zone • Immediate threats present. Leave area if possible.';
-    }
+    // --- Generate Dynamic Description from Threats ---
+    if (finalScore < 90 && threats.length > 0) {
+      for (const t of threats) {
+        if (uniqueReasons.size >= 3) break; // Limit to top 3 distinct reasons
 
-    // Sort threats by impact (highest first)
-    threats.sort((a, b) => b.impact - a.impact);
+        // 1. RISK GRID: Prefer aggregated 'eventType' if available, else formatted title
+        if (t.type === 'risk_grid' && t.reasons && t.reasons.length > 0) {
+          t.reasons.forEach(r => {
+             // Use eventType (e.g. "Theft") over title (e.g. "Phone stolen") for summaries
+             const txt = r.eventType || r.title;
+             if (txt) uniqueReasons.add(formatReasonText(txt));
+          });
+        } 
+        // 2. INCIDENTS: Use category (Type) for summary
+        else if (t.category) {
+          uniqueReasons.add(t.category);
+        }
+        // 3. Fallback: formatted name
+        else if (t.name) {
+          uniqueReasons.add(formatReasonText(t.name));
+        }
+      }
+
+      if (uniqueReasons.size > 0) {
+        const reasonStr = Array.from(uniqueReasons).join(', ');
+        description += ` • Reported issues: ${reasonStr}.`;
+      } else {
+        description += ' • Threats detected nearby.';
+      }
+    } else if (finalScore >= 90) {
+      description += ' • Low crime rate reported recently.';
+    }
 
     const result = {
       safetyScore: finalScore,
@@ -463,6 +530,28 @@ function shouldNotifyScoreChange(oldScore, newScore) {
   }
   
   return null; // No notification needed
+}
+
+/**
+ * Helper to clean up reason text
+ * 1. Specific mappings (IMMEDIATE PANIC -> Emergency Alert)
+ * 2. Title Casing
+ */
+function formatReasonText(text) {
+  if (!text) return 'Safety Concern';
+  
+  const clean = text.trim();
+  const upper = clean.toUpperCase();
+
+  // Map known raw codes to user-friendly labels
+  if (upper.includes('PANIC') || upper.includes('IMMEDIATE')) return 'Emergency Alert';
+  if (upper === 'SOS') return 'Distress Signal';
+  if (upper === 'MEDICAL') return 'Medical Emergency';
+
+  // Title Case conversion (e.g. "robbery at hostel" -> "Robbery At Hostel")
+  return clean.replace(/\w\S*/g, (txt) => {
+    return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
+  });
 }
 
 module.exports = {
