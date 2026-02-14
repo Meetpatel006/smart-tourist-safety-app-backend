@@ -1,6 +1,7 @@
 const TourGroup = require("../models/TourGroup");
 const Tourist = require("../models/Tourist");
 const crypto = require('crypto');
+const { generateGeofencesForItinerary, removeOldGeofences } = require('../services/itineraryGeofenceService');
 // const { generateAccessCode } = require("../utils/hash"); // Helper or just Math.random
 
 exports.createGroup = async (req, res, next) => {
@@ -28,6 +29,14 @@ exports.createGroup = async (req, res, next) => {
     });
 
     await newGroup.save();
+
+    // Generate geofences for the group's itinerary
+    try {
+      await generateGeofencesForItinerary(newGroup._id.toString(), 'TourGroup', itinerary);
+    } catch (geofenceErr) {
+      console.error('Failed to generate geofences for new group:', geofenceErr);
+      // Don't fail the request if geofence generation fails - group is already created
+    }
 
     // Update Admin User
     await Tourist.findByIdAndUpdate(adminId, {
@@ -193,6 +202,15 @@ exports.updateGroupItinerary = async (req, res, next) => {
     // Update itinerary
     group.itinerary = itinerary;
     await group.save();
+
+    // Regenerate geofences for the updated itinerary
+    try {
+      await removeOldGeofences(group._id.toString(), 'TourGroup');
+      await generateGeofencesForItinerary(group._id.toString(), 'TourGroup', itinerary);
+    } catch (geofenceErr) {
+      console.error('Failed to regenerate geofences for updated itinerary:', geofenceErr);
+      // Don't fail the request if geofence regeneration fails - itinerary is already updated
+    }
 
     res.status(200).json({
       success: true,

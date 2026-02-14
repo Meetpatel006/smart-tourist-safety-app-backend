@@ -238,14 +238,42 @@ exports.getAllDestinationGeofences = async (req, res, next) => {
 };
 
 // @desc    Get all zones with visual styling (combined endpoint)
-// @route   GET /api/geofences/all-zones-styled
+// @route   GET /api/geofences/all-zones-styled?userId=xxx
 // @access  Public
 exports.getAllZonesWithStyling = async (req, res, next) => {
   try {
+    const { userId } = req.query;
+
     // Fetch all three types of zones
     const dangerZones = await DangerZone.find();
     const riskGrids = await RiskGrid.find().limit(100);
-    const geofences = await Geofence.find({ isActive: true });
+    
+    // Fetch geofences based on userId parameter
+    let geofenceQuery = { isActive: true };
+    
+    // If userId is provided, include both static geofences and user's itinerary geofences
+    // If no userId, only return static geofences (sourceType: 'static' or undefined)
+    if (userId) {
+      geofenceQuery = {
+        isActive: true,
+        $or: [
+          { sourceType: { $exists: false } }, // Static geofences (no sourceType field)
+          { sourceType: 'static' }, // Explicitly static geofences
+          { ownerId: userId } // User's personal itinerary geofences
+        ]
+      };
+    } else {
+      // No userId provided - only return static geofences
+      geofenceQuery = {
+        isActive: true,
+        $or: [
+          { sourceType: { $exists: false } },
+          { sourceType: 'static' }
+        ]
+      };
+    }
+
+    const geofences = await Geofence.find(geofenceQuery);
 
     // Transform to a unified response with visual styling
     const response = {
@@ -277,14 +305,14 @@ exports.getAllZonesWithStyling = async (req, res, next) => {
       geofences: geofences.map(fence => ({
         ...fence.toObject(),
         visualStyle: fence.visualStyle || {
-          zoneType: "geofence",
-          borderStyle: "dotted",
+          zoneType: fence.sourceType === 'itinerary' ? "itinerary_geofence" : "geofence",
+          borderStyle: fence.sourceType === 'itinerary' ? "solid" : "dotted",
           borderWidth: 2,
           fillOpacity: 0.15,
           fillPattern: "solid",
-          iconType: "shield",
+          iconType: fence.sourceType === 'itinerary' ? "location-pin" : "shield",
           renderPriority: 3,
-          color: "blue"
+          color: fence.sourceType === 'itinerary' ? "green" : "blue"
         }
       }))
     };
