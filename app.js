@@ -2,6 +2,7 @@ const http = require("http");
 const express = require("express");
 const morgan = require("morgan");
 const cors = require("cors");
+const cron = require("node-cron");
 const { PORT, NODE_ENV } = require("./config/config");
 const connectDB = require("./config/dbConnection");
 const authRoutes = require("./routes/authRoutes");
@@ -15,6 +16,7 @@ const geofenceRoutes = require("./routes/geofenceRoutes");
 const itineraryRoutes = require("./routes/itineraryRoutes");
 const { errorHandler } = require("./middlewares/errorMiddleware");
 const { updateRiskScores } = require("./services/riskEngineService");
+const { cleanupExpiredGeofences } = require("./services/itineraryGeofenceService");
 // const { fetchNewsIncidents } = require('./services/newsService'); // News service disabled
 const { init } = require('./services/realtimeService');
 
@@ -112,8 +114,27 @@ const startServer = async () => {
       // Run on startup
       runJobs();
 
+      // Cleanup expired geofences on startup
+      cleanupExpiredGeofences().catch(err => 
+        console.error("Startup geofence cleanup error:", err)
+      );
+
       // Schedule every 30 mins
       setInterval(runJobs, 30 * 60 * 1000);
+
+      // Schedule midnight cleanup for expired itinerary geofences
+      // Runs every day at 00:00 (midnight)
+      cron.schedule('0 0 * * *', async () => {
+        console.log('Running midnight geofence cleanup...');
+        try {
+          await cleanupExpiredGeofences();
+          console.log('Midnight geofence cleanup completed');
+        } catch (err) {
+          console.error('Midnight geofence cleanup error:', err);
+        }
+      }, {
+        timezone: "Asia/Kolkata" // Indian timezone for midnight calculation
+      });
     });
   } catch (err) {
     console.error("Failed to connect to Database. Server shutting down.", err);

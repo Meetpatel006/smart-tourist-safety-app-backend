@@ -45,9 +45,10 @@ const DangerZoneSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Tourist Destination Geofence Schema (for alerting tourists when leaving safe areas)
+// Also supports itinerary-based geofences for tour groups and solo users
 const GeofenceSchema = new mongoose.Schema({
   name: { type: String, required: true },                 // "Taj Mahal Area", "Goa Beach Zone"
-  destination: { type: String, required: true },          // Tourist destination name
+  destination: { type: String },                          // Tourist destination name (optional for itinerary geofences)
   type: { type: String, enum: ["circle", "polygon"], required: true },
   coords: {                                               // [lat, lng] - center point
     type: [Number],
@@ -62,6 +63,40 @@ const GeofenceSchema = new mongoose.Schema({
   isActive: { type: Boolean, default: true },
   alertMessage: { type: String, default: "You are leaving the safe tourist area" },
   
+  // NEW FIELDS FOR ITINERARY GEOFENCES
+  sourceType: { 
+    type: String, 
+    enum: ["static", "itinerary"], 
+    default: "static",
+    required: true 
+  },
+  ownerId: { 
+    type: String, // Changed from ObjectId to String to support touristId/groupId
+    required: function() { return this.sourceType === 'itinerary'; }
+  },
+  ownerType: { 
+    type: String, 
+    enum: ["Tourist", "TourGroup"],
+    required: function() { return this.sourceType === 'itinerary'; }
+  },
+  dayNumber: { 
+    type: Number,
+    required: function() { return this.sourceType === 'itinerary'; }
+  },
+  scheduledDate: { 
+    type: Date,
+    required: function() { return this.sourceType === 'itinerary'; }
+  },
+  activityNodeName: { type: String },
+  activityNodeType: { 
+    type: String, 
+    enum: ["start", "visit", "stay", "transit", "end"]
+  },
+  expiresAt: { 
+    type: Date,
+    required: function() { return this.sourceType === 'itinerary'; }
+  },
+  
   // Visual styling properties to differentiate from danger zones and risk grids
   visualStyle: {
     zoneType: { type: String, default: "geofence" },      // Identifies this as a geofence
@@ -74,6 +109,11 @@ const GeofenceSchema = new mongoose.Schema({
     color: { type: String, default: "blue" }              // Base color (for non-severity zones)
   }
 }, { timestamps: true });
+
+// INDEXES FOR PERFORMANCE
+GeofenceSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 86400 }); // TTL index (24 hours after expiry)
+GeofenceSchema.index({ ownerId: 1, ownerType: 1, scheduledDate: 1, isActive: 1 }); // Compound index for queries
+GeofenceSchema.index({ sourceType: 1 }); // Filter by type
 
 module.exports = {
   DangerZone: mongoose.model("DangerZone", DangerZoneSchema),

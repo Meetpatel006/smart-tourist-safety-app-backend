@@ -1,6 +1,7 @@
 const Tourist = require('../models/Tourist');
 const mongoose = require('mongoose');
 const { CustomError } = require('../middlewares/errorMiddleware');
+const { generateGeofencesForItinerary, removeOldGeofences } = require('../services/itineraryGeofenceService');
 
 // Get the logged-in user's itinerary
 exports.getItinerary = async (req, res, next) => {
@@ -52,6 +53,15 @@ exports.replaceItinerary = async (req, res, next) => {
         tourist.dayWiseItinerary = itinerary;
         await tourist.save();
 
+        // Generate geofences for the updated itinerary
+        try {
+            await removeOldGeofences(tourist.touristId, 'Tourist');
+            await generateGeofencesForItinerary(tourist.touristId, 'Tourist', itinerary);
+        } catch (geofenceErr) {
+            console.error('Failed to regenerate geofences for updated itinerary:', geofenceErr);
+            // Don't fail the request if geofence generation fails - itinerary is already saved
+        }
+
         res.status(200).json({ success: true, message: 'Itinerary saved', data: tourist.dayWiseItinerary });
     } catch (err) {
         next(err);
@@ -101,6 +111,14 @@ exports.addItinerary = async (req, res, next) => {
         tourist.dayWiseItinerary = itinerary;
         await tourist.save();
 
+        // Generate geofences for the new itinerary
+        try {
+            await generateGeofencesForItinerary(tourist.touristId, 'Tourist', itinerary);
+        } catch (geofenceErr) {
+            console.error('Failed to generate geofences for new itinerary:', geofenceErr);
+            // Don't fail the request if geofence generation fails - itinerary is already created
+        }
+
         res.status(201).json({ success: true, message: 'Itinerary created', data: tourist.dayWiseItinerary });
     } catch (err) {
         next(err);
@@ -131,6 +149,15 @@ exports.updateDay = async (req, res, next) => {
 
         await tourist.save();
 
+        // Regenerate geofences for the updated itinerary
+        try {
+            await removeOldGeofences(tourist.touristId, 'Tourist');
+            await generateGeofencesForItinerary(tourist.touristId, 'Tourist', tourist.dayWiseItinerary);
+        } catch (geofenceErr) {
+            console.error('Failed to regenerate geofences after day update:', geofenceErr);
+            // Don't fail the request if geofence generation fails - itinerary is already updated
+        }
+
         res.status(200).json({ success: true, message: 'Day updated', data: tourist.dayWiseItinerary });
     } catch (err) {
         next(err);
@@ -146,6 +173,14 @@ exports.clearItinerary = async (req, res, next) => {
 
         tourist.dayWiseItinerary = [];
         await tourist.save();
+
+        // Remove all geofences when itinerary is cleared
+        try {
+            await removeOldGeofences(tourist.touristId, 'Tourist');
+        } catch (geofenceErr) {
+            console.error('Failed to remove geofences after clearing itinerary:', geofenceErr);
+            // Don't fail the request if geofence removal fails - itinerary is already cleared
+        }
 
         res.status(200).json({ success: true, message: 'Itinerary cleared' });
     } catch (err) {
