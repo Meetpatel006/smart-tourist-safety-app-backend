@@ -190,7 +190,9 @@ exports.triggerSOS = async (req, res, next) => {
 					riskScore: updatedGrid.riskScore,
 					location: updatedGrid.location,
 					gridName: updatedGrid.gridName,
-					lastUpdated: updatedGrid.lastUpdated
+					lastUpdated: updatedGrid.lastUpdated,
+					radius: updatedGrid.radius,
+					tierLevel: updatedGrid.tierLevel
 				}).catch(err => console.error('Grid emit error:', err));
 			}
 		} catch (gridErr) {

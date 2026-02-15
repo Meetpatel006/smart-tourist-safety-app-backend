@@ -153,8 +153,17 @@ function calculateThreatImpact(distance, severity, type, customRadius = null) {
   }
 
   // Calculate penalty: severity * impact * max penalty
-  // Max penalty is 60 points for a Very High severity threat at critical distance
-  const maxPenalty = type === 'danger_zone' ? 70 : 50; // Danger zones have higher impact
+  // Max penalty is tier-based to allow score to drop near 0 for extreme threats
+  let maxPenalty = 50;
+  if (type === 'danger_zone') {
+      maxPenalty = 70;
+  } else if (type === 'risk_grid') {
+      // Dynamic penalty based on severity (riskScore)
+      if (severity >= 0.8) maxPenalty = 100;     // Critical (Allows dropping to 0 for Max Risk)
+      else if (severity >= 0.6) maxPenalty = 60; // High (Increased slightly to reflect danger)
+      else maxPenalty = 40;                      // Medium (or Low)
+  }
+  
   return severity * impactMultiplier * maxPenalty;
 }
 
@@ -214,7 +223,7 @@ async function calculateSafetyScore(lat, lng) {
           
           // Store this grid's coverage to mask individual underlying events (SOS/Incidents)
           // We use the grid radius itself for masking, as events inside are considered part of the grid
-          penalizedGridZones.push({ lat: gridLat, lng: gridLng, radius: gridRadius });
+          penalizedGridZones.push({ lat: gridLat, lng: gridLng, radius: gridRadius, penalty: impact });
 
           threats.push({
             type: 'risk_grid',
@@ -222,6 +231,7 @@ async function calculateSafetyScore(lat, lng) {
             distance: Math.round(distance),
             severity: grid.riskLevel,
             impact: Math.round(impact),
+            isInside: distance <= gridRadius,
             coordinates: { lat: gridLat, lng: gridLng },
             reasons: grid.reasons || [] // Capture reasons from grid for description
           });
@@ -309,16 +319,74 @@ async function calculateSafetyScore(lat, lng) {
       if (sLat == null || sLng == null) continue;
 
       // Check if this SOS is covered by an already penalized Risk Grid to avoid double-counting
-      const isCoveredByGrid = penalizedGridZones.some(grid => {
-        const distToGrid = calculateDistance(sLat, sLng, grid.lat, grid.lng);
-        return distToGrid <= grid.radius; 
-      });
+      let isCoveredByGrid = false;
+      let gridPenaltyAlreadyApplied = 0;
 
-      if (isCoveredByGrid) continue;
+      for (const grid of penalizedGridZones) {
+        const distToGrid = calculateDistance(sLat, sLng, grid.lat, grid.lng);
+        if (distToGrid <= grid.radius) {
+           console.log("already covered in grid");
+           isCoveredByGrid = true;
+           console.log(isCoveredByGrid);
+           gridPenaltyAlreadyApplied = grid.penalty || 0;
+           break;
+        }
+      }
+
+
 
       const distance = calculateDistance(lat, lng, sLat, sLng);
-      const severity = Math.max(0, Math.min(1, (100 - (sos.safetyScore || 70)) / 100)); // lower safetyScore -> higher severity
+      
+      // Determine severity based on User Score AND Reason Type
+      // 1. Score-based severity
+      const scoreSeverity = Math.max(0, Math.min(1, (100 - (sos.safetyScore || 70)) / 100));
+      
+      // 2. Semantic severity from SOS reason
+      const reasonText = (sos.sosReason?.reason || '').toUpperCase();
+      let semanticSeverity = 0.3; // Default catch-all (lowered)
+      
+      if (reasonText.includes('IMMEDIATE') || reasonText.includes('PANIC')) {
+          semanticSeverity = 1.0; // Max Danger: Affects everyone
+      } else if (reasonText.includes('FIRE')) {
+          semanticSeverity = 0.95; // Environmental Threat
+      } else if (reasonText.includes('SECURITY') || reasonText.includes('VIOLENCE')) {
+          semanticSeverity = 0.90; // Active Threat
+      } else if (reasonText.includes('ACCIDENT')) {
+          semanticSeverity = 0.50; // Physical Hazard (Road/structure issue)
+      } else if (reasonText.includes('MEDICAL')) {
+          semanticSeverity = 0.10; // Personal Emergency (Low risk to others)
+      }
+
+      // Take the maximum of the two indicators
+      // Note: For Medical, even if user safety score is low, the event itself implies low external threat
+      // So we heavily rely on the reason type for capping.
+      const severity = Math.max(scoreSeverity, semanticSeverity);
+
       const impact = proximityPenalty(distance, CONFIG.SOS_RADIUS_M, severity, CONFIG.MAX_SOS_PENALTY);
+
+      // Special Handling for "Inside Grid" Alerts:
+      // If the specific SOS is critical (Panic/Fire) AND its individual impact > Grid Penalty,
+      // apply the difference so the user feels the urgency of the specific event.
+      if (isCoveredByGrid) {
+          if ((semanticSeverity >= 0.9) && (impact > gridPenaltyAlreadyApplied)) {
+             // Only add the *extra* danger this specific panic brings over the general grid risk
+             const residualPenalty = impact - gridPenaltyAlreadyApplied;
+             if (residualPenalty > 0) {
+                 console.log(`⚠️ Critical Alert Override: ${reasonText} (Severity ${semanticSeverity}) adds +${Math.round(residualPenalty)} points over grid penalty (${Math.round(gridPenaltyAlreadyApplied)})`);
+                 totalPenalty += residualPenalty;
+                 threats.push({
+                    type: 'sos_alert',
+                    name: formatReasonText(sos.sosReason?.reason || 'Critical Alert'),
+                    category: 'Critical Alert',
+                    distance: Math.round(distance),
+                    severity: `semantic:${semanticSeverity}`,
+                    impact: Math.round(residualPenalty), // Show added impact
+                    timestamp: sos.timestamp
+                 });
+             }
+          }
+          continue; // Skip standard processing
+      }
 
       if (impact > 0) {
         totalPenalty += impact;
@@ -426,37 +494,66 @@ async function calculateSafetyScore(lat, lng) {
       description = 'Danger Zone';
     }
 
-    // --- Generate Dynamic Description from Threats ---
-    if (finalScore < 90 && threats.length > 0) {
-      for (const t of threats) {
-        if (uniqueReasons.size >= 3) break; // Limit to top 3 distinct reasons
+    // --- Generate Dynamic Description ---
+    
+    // 1. Primary Cause Analysis
+    if (threats.length > 0) {
+        const topThreat = threats[0]; // Already sorted by impact desc
+        let primaryText = "";
 
-        // 1. RISK GRID: Prefer aggregated 'eventType' if available, else formatted title
-        if (t.type === 'risk_grid' && t.reasons && t.reasons.length > 0) {
-          t.reasons.forEach(r => {
-             // Use eventType (e.g. "Theft") over title (e.g. "Phone stolen") for summaries
-             const txt = r.eventType || r.title;
-             if (txt) uniqueReasons.add(formatReasonText(txt));
-          });
+        if (topThreat.type === 'danger_zone') {
+            const threatName = topThreat.name || 'Danger Zone';
+            if (topThreat.isInside) {
+                primaryText = `You are inside ${threatName}`;
+            } else {
+                primaryText = `You are near ${threatName} (${topThreat.distance}m away)`;
+            }
         } 
-        // 2. INCIDENTS: Use category (Type) for summary
-        else if (t.category) {
-          uniqueReasons.add(t.category);
+        else if (topThreat.type === 'risk_grid') {
+            // Extract best reason from grid
+            let reasons = topThreat.reasons?.map(r => formatReasonText(r.title || r.eventType)).slice(0, 2).join(', ');
+            if (!reasons) reasons = "Unsafe Activity";
+            
+            if (topThreat.isInside) { 
+                primaryText = `High risk of ${reasons} in your immediate area`;
+            } else {
+                primaryText = `Reports of ${reasons} nearby (${topThreat.distance}m)`;
+            }
         }
-        // 3. Fallback: formatted name
-        else if (t.name) {
-          uniqueReasons.add(formatReasonText(t.name));
+        else if (topThreat.type === 'sos_alert' || topThreat.type === 'incident') {
+             // For direct alerts (Override or Individual)
+             primaryText = `${topThreat.name} reported ${topThreat.distance}m away`;
         }
-      }
 
-      if (uniqueReasons.size > 0) {
-        const reasonStr = Array.from(uniqueReasons).join(', ');
-        description += ` • Reported issues: ${reasonStr}.`;
-      } else {
-        description += ' • Threats detected nearby.';
-      }
+        if (primaryText) {
+            description = `${description} • ${primaryText}.`;
+        }
+        
+        // 2. Secondary Context (Aggregate other reasons excluding the primary one if redundant)
+        const otherReasons = new Set();
+        // Skip the first one since it's used in primary text
+        for (let i = 1; i < threats.length; i++) {
+             const t = threats[i];
+             // Extract simple labels
+             if (t.type === 'risk_grid' && t.reasons) {
+                 t.reasons.forEach(r => otherReasons.add(formatReasonText(r.eventType || r.title)));
+             } else if (t.category) {
+                 otherReasons.add(t.category);
+             } else if (t.name) {
+                 otherReasons.add(formatReasonText(t.name));
+             }
+        }
+        
+        // Filter out reasons that might be duplicates of the primary text to avoid repetition
+        // (Simple heuristic: if primary text contains the reason, skip it)
+        const filteredReasons = Array.from(otherReasons).filter(r => !primaryText.includes(r));
+
+        if (filteredReasons.length > 0 && finalScore < 85) {
+            const list = filteredReasons.slice(0, 3).join(", ");
+            description += ` Other concerns: ${list}.`;
+        }
     } else if (finalScore >= 90) {
-      description += ' • Low crime rate reported recently.';
+        description += " • No significant threats reported recently.";
     }
 
     const result = {

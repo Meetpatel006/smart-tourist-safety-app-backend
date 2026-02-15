@@ -207,8 +207,15 @@ async function processGrid(gridId) {
     let wSos = W_SOS;
     
     if (incidentScore === 0 && sosScore > 0) {
-        wIncident = 0.10; // Reduce incident weight temporarily
-        wSos = 0.80;      // Boost SOS weight to allow score > 0.8
+        if (tier === 'Critical') {
+            // Extreme Case: Massive SOS cluster but no official incidents yet.
+            // Allow risk to reach ~1.0 (Very High) purely on SOS volume.
+            wIncident = 0.0;
+            wSos = 0.95; // 0.95 SOS + 0.10 History can saturate to 1.0 (clamped)
+        } else {
+            wIncident = 0.10; // Reduce incident weight temporarily
+            wSos = 0.80;      // Boost SOS weight to allow score > 0.8
+        }
     }
 
     // Weighted Sum
